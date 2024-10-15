@@ -1,0 +1,7 @@
+# Some options in this file are unstable. Use `cargo +nightly fmt`.
+
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+imports_layout = "Horizontal"
+reorder_impl_items = true
+struct_variant_width = 0
