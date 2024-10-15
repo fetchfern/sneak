@@ -1,8 +1,16 @@
 [package]
 name = "sneak"
 version = "0.1.0"
+description = "easy-to-use *at syscall abstractions"
 edition = "2021"
+authors = ["François-Xavier Talbot <fetch@pyro.host>"]
+keywords = ["openat", "open", "linux", "toctou", "ffi"]
+categories = ["filesystem"]
+documentation = "https://docs.rs/sneak"
+readme = "README.md"
+repository = "https://github.com/fetchfern/sneak"
+license = "MIT OR Apache-2.0"
+rust-version = "1.72.1"
 
 [dependencies]
-libc = "*"
-thiserror = "1"
+libc = "0.2"
