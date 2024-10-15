@@ -53,7 +53,7 @@
 //!
 //!     // if another application has access to these files at the same time
 //!     // as our API, we can avoid race conditions with sneak:
-//!     let mut data_file = user_dir.open_file(format!("user_data/{}/data.bin", request.user_id))?;
+//!     let mut data_file = user_dir.open_file(format!("user_data/{}/data.bin", request.user_id), libc::WRONLY)?;
 //!
 //!     // set correct file permissions
 //!     data_file.fchown(request.user_uid, request.user_gid)?;

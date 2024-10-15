@@ -27,7 +27,7 @@ while let Some(item) = queue.recv() {
 	// write data
 	file.write_all(&item.data)?;
 
-	println!("wrote data to user {}'s folder!");
+	println!("wrote data to user {}'s folder!", item.user_id);
 }
 ```
 
