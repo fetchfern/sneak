@@ -13,6 +13,24 @@ Unfortunately, avoiding these race conditions is not an easy task. You need to d
 
 See the [documentation](https://docs.rs/sneak/latest/sneak).  
 
+```rust
+use sneak::Dir;
+
+let base_dir = Dir::open("/var/lib/myapp/")?;
+
+while let Some(item) = queue.recv() {
+	let filepath = format!("./user_data/{}/data.txt", item.user_id);
+
+	// open the file in a TOCTOU-safe way
+	let mut file = base_dir.open_file(&filepath, libc::O_WRONLY)?;
+
+	// write data
+	file.write_all(&item.data)?;
+
+	println!("wrote data to user {}'s folder!");
+}
+```
+
 ### License
 
 This software is dual-licensed under the [MIT license](LICENSE-MIT) and the [Apache-2.0 license](LICENSE-APACHE).
