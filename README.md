@@ -1,6 +1,7 @@
 # sneak
 
 ![docs.rs](https://img.shields.io/docsrs/sneak)
+![Crates.io Version](https://img.shields.io/crates/v/sneak)
  
 High-level abstractions of `*at` and related *nix syscalls to build race condition-free, thread-safe, symlink traversal attack-safe user APIs.   
 
