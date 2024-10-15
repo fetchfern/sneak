@@ -167,8 +167,9 @@ impl Dir {
     /// resulting file descriptor can only be used by *at syscalls (like with the [`Dir::open_dirs`] and
     /// [`Dir::open_file`] methods) and other limited scenarios. Files and directories with this
     /// flag will not be able to be **read**, **written to** and other file operations won't be
-    /// available, including **changing ownership of the file**. Using this flag lessens filesystem
-    /// load in some cases, such as not updating `atime`.
+    /// available, including **changing ownership of the file**. Using this flag can lessen filesystem
+    /// load in some cases, by not updating `atime` for example. **Note this flag is not available on
+    /// MacOS systems**.
     ///
     /// # Example
     /// ```
@@ -602,5 +603,210 @@ unsafe fn cstr<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
 #[cold]
 unsafe fn cstr_alloc<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
     f(&CString::from_vec_unchecked(bytes.to_owned()))
+}
+
+
+#[cfg(test)]
+mod test {
+    use io::Read;
+
+    use super::*;
+
+    #[test]
+    fn open_cwd() -> io::Result<()> {
+        let _dir = Dir::open(".")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn valid_fd_for_close() -> io::Result<()> {
+        let dir = Dir::open(".")?;
+
+        let result = unsafe { libc::close(dir.fd) };
+        assert_eq!(result, 0);
+
+        // don't double-close the fd
+        mem::forget(dir);
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_self() -> io::Result<()> {
+        let dir = Dir::open(".")?;
+
+        let result = dir.open_dirs(".");
+
+        if let Err(e) = result {
+            panic!("failed: {e}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_nothing() -> io::Result<()> {
+        let dir = Dir::open(".")?;
+
+        let result = dir.open_dirs("");
+
+        if let Err(e) = result {
+            panic!("failed: {e}");
+        }
+
+        Ok(())
+    }   
+
+    #[test]
+    fn open_should_not_exist() -> io::Result<()> {
+        let dir = Dir::open(".")?;
+
+        let result = dir.open_dirs("i-do-not-exist");
+
+        match result {
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+            Ok(_) => panic!("opening not-existant directory succeeded"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_dir_exists() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subdir1/subdir2")?;
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_dirs("subdir1/subdir2");
+
+        if let Err(e) = result {
+            panic!("failed: {e}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_exists_relative() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subdir1")?;
+        std::fs::create_dir_all("./playground/subdir1/subdir2")?;
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_dirs("./subdir1/subdir2");
+
+        if let Err(e) = result {
+            panic!("failed: {e}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_skip_symlink() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subdir1/")?;
+        std::fs::create_dir_all("./playground/linked/bad")?;
+        std::os::unix::fs::symlink("./playground/linked", "./playground/subdir1/link")?;
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_dirs("./subdir1/link/bad");
+
+        match result {
+            Err(e) => assert_eq!(e.raw_os_error(), Some(20)),
+            Ok(_) => panic!("opening symlink succeeded"),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn saturate_dirs() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subdir1")?;
+        std::fs::create_dir_all("./playground/subdir3/a")?;
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_dirs("./playground/subdir1/../../../../../../subdir3");
+
+        match result {
+            Err(e) => panic!("failure(saturating open): {e}"),
+            Ok(saturated) => {
+                if let Err(e) = saturated.open_dirs("a") {
+                    panic!("failure(second open): {e}");
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn open_file() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subfolder9")?;
+        std::fs::write("./playground/subfolder9/data.txt", "helloworld1234")?;
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_file("subfolder9/data.txt", libc::O_RDONLY);
+
+        match result {
+            Err(e) => panic!("failure(open_file): {e}"),
+            Ok(mut file) => {
+                let mut s = String::new();
+                match file.read_to_string(&mut s) {
+                    Err(e) => panic!("failed(read): {e}"),
+                    Ok(_n) => assert_eq!(s, "helloworld1234"),
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn file_fchown() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subfolder9")?;
+
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_dirs("subfolder9");
+
+        match result {
+            Err(e) => panic!("failure(open_dirs): {e}"),
+            Ok(dir) => {
+                if let Err(e) = dir.fchown(uid, gid) {
+                    panic!("failed(fchown): {e}");
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn file_fstat() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/subfolder9")?;
+
+        let dir = Dir::open("./playground")?;
+
+        let result = dir.open_dirs("subfolder9");
+
+        match result {
+            Err(e) => panic!("failure(open_dirs): {e}"),
+            Ok(dir) => {
+                match dir.fstat() {
+                    Err(e) => panic!("failed(fstat): {e}"),
+                    Ok(meta) => assert_eq!(meta.size(), 4096),
+                }
+            },
+        }
+
+        Ok(())
+    }
 }
 
