@@ -30,7 +30,7 @@
 //! ```toml
 //! sneak = "0.1.0"
 //! ```
-//! 
+//!
 //! Use [`Dir`] to open a starting trusted directory.  
 //!
 //! ```
@@ -70,7 +70,7 @@
 //! A crate like this cannot support async without being runtime-specific. Though, using it as part
 //! of your async codebase should be easy: just wrap the syscall-calling operations in your
 //! runtime's `spawn_blocking` function. This includes all methods on [`Dir`], as well as its
-//! [`Drop`] implementation. 
+//! [`Drop`] implementation.
 //!
 //! ```
 //! use std::path::PathBuf;
@@ -106,24 +106,24 @@
 use std::ffi::{c_int, CStr, CString};
 use std::fs::File;
 use std::os::fd::FromRawFd;
-use std::path::{Path, PathBuf, Component};
-use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::mem;
-use std::slice;
-use std::ptr;
-use std::time::{SystemTime, Duration, UNIX_EPOCH};
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{io, mem, ptr, slice};
 
 #[cfg(target_os = "windows")]
 compile_error!("crate `sneak` is not supported on Windows.");
 
 #[cfg(not(target_os = "macos"))]
-use libc::{close, fchown, fstat, open, openat, stat, time_t, dev_t, ino_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY};
+use libc::{
+    close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY
+};
 #[cfg(target_os = "macos")]
-use libc::{close, fchown, fstat, open, openat, stat, time_t, dev_t, ino_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_RDONLY};
+use libc::{
+    close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_RDONLY
+};
 #[cfg(target_os = "macos")]
-const O_PATH: c_int  = 0; 
-
+const O_PATH: c_int = 0;
 
 /// A owned reference to an opened directory. This reference is automatically cleaned up on drop.
 pub struct Dir {
@@ -138,7 +138,10 @@ impl Dir {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let fd = unsafe {
             cstr(path.as_ref().as_os_str().as_bytes(), &|s| {
-                open(s.as_ptr(), O_DIRECTORY | O_PATH | O_NOFOLLOW | O_CLOEXEC | O_RDONLY)
+                open(
+                    s.as_ptr(),
+                    O_DIRECTORY | O_PATH | O_NOFOLLOW | O_CLOEXEC | O_RDONLY,
+                )
             })
         };
 
@@ -187,10 +190,7 @@ impl Dir {
     /// [`O_PATH`]: const@::libc::O_PATH
     /// [`O_RDONLY`]: const@::libc::O_RDONLY
     pub fn with_flags(self, flags: i32) -> Self {
-        Dir {
-            fd: self.fd,
-            flags,
-        }
+        Dir { fd: self.fd, flags }
     }
 
     /// Recursively opens every directory in the given path, returning the first encountered error
@@ -205,9 +205,9 @@ impl Dir {
     /// Note the original directory `self` is kept open until it is dropped.   
     ///
     /// Symbolic links are not followed unless you've overridden the flags with [`Dir::with_flags`] to
-    /// not contain [`O_NOFOLLOW`]. 
+    /// not contain [`O_NOFOLLOW`].
     ///
-    /// 
+    ///
     /// # Example
     /// ```
     /// use sneak::Dir;
@@ -226,8 +226,10 @@ impl Dir {
 
         for c in path.as_ref().components() {
             match c {
-                Component::RootDir | Component::CurDir => {},
-                Component::ParentDir => { let _ = path_buf.pop(); },
+                Component::RootDir | Component::CurDir => {}
+                Component::ParentDir => {
+                    let _ = path_buf.pop();
+                }
                 Component::Normal(s) => path_buf.push(s),
                 Component::Prefix(_) => return Err(io::ErrorKind::NotFound.into()),
             }
@@ -267,9 +269,7 @@ impl Dir {
                 Err(_) => unreachable!(),
             };
 
-            let new_fd = unsafe {
-                openat(self.fd, CUR_DIR.as_ptr(), self.flags | O_RDONLY)
-            };
+            let new_fd = unsafe { openat(self.fd, CUR_DIR.as_ptr(), self.flags | O_RDONLY) };
 
             if new_fd < 0 {
                 return Err(io::Error::last_os_error());
@@ -311,7 +311,7 @@ impl Dir {
     /// let mut file = dir.open_file("./subfolder/data.txt", O_CREAT | O_WRONLY)?;
     /// file.write_all(my_data)?;
     /// ```
-    /// 
+    ///
     /// [`O_DIRECTORY`]: const@::libc::O_DIRECTORY
     /// [`IsADirectory`]: type@std::io::ErrorKind::IsADirectory
     /// [`NotFound`]: type@std::io::ErrorKind::NotFound
@@ -333,8 +333,10 @@ impl Dir {
 
             if components.peek().is_some() {
                 match c {
-                    Component::RootDir | Component::CurDir => {},
-                    Component::ParentDir => { let _ = path_buf.pop(); },
+                    Component::RootDir | Component::CurDir => {}
+                    Component::ParentDir => {
+                        let _ = path_buf.pop();
+                    }
                     Component::Normal(s) => path_buf.push(s),
                     Component::Prefix(_) => return Err(io::ErrorKind::NotFound.into()),
                 }
@@ -380,7 +382,11 @@ impl Dir {
 
         let fd = unsafe {
             cstr(filename.as_bytes(), &|cstr| {
-                openat(prev_fd, cstr.as_ptr(), self.flags & !O_DIRECTORY | extra_flags)
+                openat(
+                    prev_fd,
+                    cstr.as_ptr(),
+                    self.flags & !O_DIRECTORY | extra_flags,
+                )
             })
         };
 
@@ -404,15 +410,13 @@ impl Dir {
     ///
     /// let dir = Dir::open(base_dir)?.open_dirs("./data")?;
     ///
-    /// // change `./data` to be owned 
+    /// // change `./data` to be owned
     /// dir.fchown(1000, 1000);
     /// ```
     ///
     /// [`O_PATH`]: const@::libc::O_PATH
     pub fn fchown(&self, uid: u32, gid: u32) -> io::Result<()> {
-        let result = unsafe {
-            fchown(self.fd, uid, gid)
-        };
+        let result = unsafe { fchown(self.fd, uid, gid) };
 
         if result < 0 {
             Err(io::Error::last_os_error())
@@ -570,14 +574,14 @@ impl Metadata {
 }
 
 /// Returns the default flags used by [`Dir`]. In the majority cases, these
-/// flags should be used. 
+/// flags should be used.
 ///
 /// Flags currently include [`O_NOFOLLOW`], [`O_DIRECTORY`] and [`O_CLOEXEC`].
 pub fn default_flags() -> c_int {
     O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC
 }
 
-/// This uses the same optimization as the standard library's `&[u8]` -> `CStr` convertion. 
+/// This uses the same optimization as the standard library's `&[u8]` -> `CStr` convertion.
 ///
 /// Safety: caller must ensure `bytes` has no nul byte.
 #[inline]
@@ -595,7 +599,9 @@ unsafe fn cstr<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
             buf_ptr.add(bytes.len()).write(0);
         }
 
-        f(CStr::from_bytes_with_nul_unchecked(unsafe { slice::from_raw_parts(buf_ptr, bytes.len() + 1) }))
+        f(CStr::from_bytes_with_nul_unchecked(unsafe {
+            slice::from_raw_parts(buf_ptr, bytes.len() + 1)
+        }))
     }
 }
 
@@ -604,7 +610,6 @@ unsafe fn cstr<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
 unsafe fn cstr_alloc<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
     f(&CString::from_vec_unchecked(bytes.to_owned()))
 }
-
 
 #[cfg(test)]
 mod test {
@@ -656,7 +661,7 @@ mod test {
         }
 
         Ok(())
-    }   
+    }
 
     #[test]
     fn open_should_not_exist() -> io::Result<()> {
@@ -736,7 +741,7 @@ mod test {
                 if let Err(e) = saturated.open_dirs("a") {
                     panic!("failure(second open): {e}");
                 }
-            },
+            }
         }
 
         Ok(())
@@ -759,7 +764,7 @@ mod test {
                     Err(e) => panic!("failed(read): {e}"),
                     Ok(_n) => assert_eq!(s, "helloworld1234"),
                 }
-            },
+            }
         }
 
         Ok(())
@@ -782,7 +787,7 @@ mod test {
                 if let Err(e) = dir.fchown(uid, gid) {
                     panic!("failed(fchown): {e}");
                 }
-            },
+            }
         }
 
         Ok(())
@@ -798,15 +803,12 @@ mod test {
 
         match result {
             Err(e) => panic!("failure(open_dirs): {e}"),
-            Ok(dir) => {
-                match dir.fstat() {
-                    Err(e) => panic!("failed(fstat): {e}"),
-                    Ok(meta) => assert_eq!(meta.size(), 4096),
-                }
+            Ok(dir) => match dir.fstat() {
+                Err(e) => panic!("failed(fstat): {e}"),
+                Ok(meta) => assert_eq!(meta.size(), 4096),
             },
         }
 
         Ok(())
     }
 }
-
