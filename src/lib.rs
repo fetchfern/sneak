@@ -1,6 +1,32 @@
 //! High-level abstractions of *at(2)-and-related Linux syscalls to build race condition-free,
 //! thread-safe, symlink traversal attack-safe user APIs.   
 //!
+//! ```
+//! use sneak::{default_flags, openat2, Dir, OpenHow};
+//! use libc::{RESOLVE_BENEATH, O_CREAT, O_WRONLY, O_RDONLY};
+//! use std::io::Write;
+//!
+//! let root = Dir::open(".")?;
+//!
+//! // Open subdirectories with `openat2` adapters
+//! let appdata = root.open_dirs_beneath(format!("application/data/{user_path}"))?;
+//!
+//! // Open successive directories with chained `openat` calls
+//! let sibling = root.open_dirs("../neighbor")?;
+//!
+//! // Open files
+//! let mut data = sibling.open_file("data.bin", O_CREAT | O_WRONLY, 0o655)?;
+//! data.write_all(b"hello world!\n");
+//!
+//! // Directly use openat2 
+//! let mut how = OpenHow::zeroed();
+//! how.flags = O_RDONLY | O_CREAT;
+//! how.mode = 0o777;
+//! how.resolve = RESOLVE_BENEATH;
+//!
+//! let dirfd = openat2(dirfd, "subfolder", &how)?;
+//! ```
+//!
 //! ### Motivation
 //!
 //! While building filesystem-abstracting APIs, you can easily run into race conditions: classic
@@ -22,16 +48,6 @@
 //! If your application accesses and modifies a filesystem tree at the same time as another thread
 //! or another process, especially if one of these processes runs as root, you should use sneak or
 //! any similar library.
-//!
-//! ### Getting started
-//!
-//! Add the library to your `Cargo.toml`:
-//!
-//! ```toml
-//! sneak = "0.1.0"
-//! ```
-//!
-//! Use [`Dir`] to open a starting trusted directory.  
 //!
 //! ```
 //! use sneak::Dir;
@@ -114,7 +130,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{io, mem, ptr, slice};
 
-use libc::{close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY};
+use libc::{close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS};
+
+pub use crate::openat2::{OpenHow, openat2};
 
 /// A owned reference to an opened directory. This reference is automatically cleaned up on drop.
 pub struct Dir {
@@ -184,6 +202,98 @@ impl Dir {
         Dir { fd: self.fd, flags }
     }
 
+    /// Returns the flags currently used by this `Dir`.
+    pub fn flags(&self) -> i32 {
+        self.flags
+    }
+
+    /// Opens the directory at the target path using the `RESOLVE_BENEATH` option of the `openat2`
+    /// syscall.  
+    ///
+    /// This prevents **any component** isn't a descendent of the `self` directory. This prevents
+    /// basic symlink traversal attacks by ensuring the resulting canonical path is always
+    /// beneath the `self` directory in a race condition-safe way.  
+    ///
+    /// # Example
+    /// ```
+    /// use sneak::Dir;
+    ///
+    /// let basedir = Dir::open("/var/lib/myapplication/")?;
+    /// let res = basedir.open_dirs_beneath("user/path/../../..");
+    ///
+    /// assert!(res.is_err());
+    /// ```
+    pub fn open_dirs_beneath<P: AsRef<Path>>(&self, path: P) -> io::Result<Dir> {
+        self.open_dirs_with_resolve_any(path, RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS, 0)
+    }
+
+    /// Like [`open_dirs_beneath`], but allows you to specify a mode. This is useful if you
+    /// want to use the `O_CREAT` flag:
+    ///
+    /// ```
+    /// use sneak::{default_flags, Dir};
+    /// use libc::O_CREAT;
+    ///
+    /// // Note the `O_RDONLY` flag is always OR-ed for operations with directories
+    /// let root = Dir::open(".")?.with_flags(default_flags() | O_CREAT);
+    /// let data = root.open_dirs_beneath_with_mode("application/data", 0o655)?;
+    /// ```
+    ///
+    /// Note in this case the `application` will not be created if it doesn't exist, only the
+    /// `data` directory will: use [`open_dirs_with_mode`] with the O_CREAT flag instead.
+    ///
+    /// [`open_dirs_beneath`]: fn@Dir::open_dirs_beneath
+    /// [`open_dirs_with_mode`]: fn@Dir::open_dirs_with_mode
+    pub fn open_dirs_beneath_with_mode<P: AsRef<Path>>(&self, path: P, mode: u64) -> io::Result<Dir> {
+        self.open_dirs_with_resolve_any(path, RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS, mode)
+    }
+
+    /// Opens a directory relative to `self` using the provided params directly to `openat2`. Note
+    /// this will thus ignore the flags set on `self`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sneak::{default_flags, Dir, OpenHow};
+    /// use libc::{RESOLVE_NO_XDEV, O_CREAT};
+    ///
+    /// let root = Dir::open("...")?;
+    /// let mut how = OpenHow::zeroed();
+    /// how.flags = default_flags() | O_CREAT;
+    /// how.mode = 0o655;
+    /// how.resolve = RESOLVE_NO_XDEV;
+    ///
+    /// let result = root.open_dirs_with_params("subdirectory", &how);
+    /// ```
+    pub fn open_dirs_with_params<P: AsRef<Path>>(&self, path: P, open_how: &OpenHow) -> io::Result<Dir> {
+        let fd = unsafe {
+            cstr(path.as_ref().as_os_str().as_bytes(), &|pathname| {
+                openat2(self.fd, pathname, open_how)
+            })?
+        };
+
+        let fd = (fd & (i32::MAX as i64)) as i32;
+
+        Ok(Dir { fd, flags: self.flags })
+    }
+
+    #[inline]
+    fn open_dirs_with_resolve_any<P: AsRef<Path>>(&self, path: P, resolve: u64, mode: u64) -> io::Result<Dir> {
+        let fd = unsafe {
+            cstr(path.as_ref().as_os_str().as_bytes(), &|pathname| {
+                openat2(self.fd, pathname, &OpenHow {
+                    flags: (self.flags | O_RDONLY).max(0) as u64,
+                    mode,
+                    resolve,
+                })
+            })?
+        };
+
+        let fd = (fd & (i32::MAX as i64)) as i32;
+
+        Ok(Dir { fd, flags: self.flags })
+    }
+
     /// Recursively opens every directory in the given path, returning the first encountered error
     /// or the leaf directory.  
     ///
@@ -198,21 +308,25 @@ impl Dir {
     /// Symbolic links are not followed unless you've overridden the flags with [`Dir::with_flags`] to
     /// not contain [`O_NOFOLLOW`].
     ///
-    ///
     /// # Example
     /// ```
     /// use sneak::Dir;
     ///
     /// // open directories ./user/store/data in `base_path`, free of race conditions and traversal attacks.
     /// let dir = Dir::open(base_path)?.open_dirs("./user/store/data")?;
-    ///
-    /// // use dir...
-    ///
     /// ```
     ///
     /// [`NotFound`]: type@std::io::ErrorKind::NotFound
     /// [`O_NOFOLLOW`]: const@::libc::O_NOFOLLOW
     pub fn open_dirs<P: AsRef<Path>>(&self, path: P) -> io::Result<Dir> {
+        self.open_dirs_with_mode(path, 0)
+    }
+
+    /// Like [`open_dirs`], but allows you to set a mode. Use this if you use the `O_CREAT` flag, 
+    /// else they will be created with file mode bits set to 0.
+    ///
+    /// [`open_dirs`]: fn@Dir::open_dirs
+    pub fn open_dirs_with_mode<P: AsRef<Path>>(&self, path: P, mode: i32) -> io::Result<Dir> {
         let mut path_buf = PathBuf::new();
 
         for c in path.as_ref().components() {
@@ -260,7 +374,7 @@ impl Dir {
                 Err(_) => unreachable!(),
             };
 
-            let new_fd = unsafe { openat(self.fd, CUR_DIR.as_ptr(), self.flags | O_RDONLY) };
+            let new_fd = unsafe { openat(self.fd, CUR_DIR.as_ptr(), self.flags | O_RDONLY, mode) };
 
             if new_fd < 0 {
                 return Err(io::Error::last_os_error());
@@ -290,6 +404,8 @@ impl Dir {
     /// opening-specific flags like [`O_WRONLY`]. You may use flags such as [`O_CREAT`] or [`O_EXCL`],
     /// but you *must* specify at least one of [`O_RDONLY`], [`O_WRONLY`] or [`O_RDWR`].
     ///
+    /// The `mode` argument will be used by **every `openat` syscall**.  
+    ///
     /// # Example
     ///
     /// ```
@@ -311,7 +427,7 @@ impl Dir {
     /// [`O_RDWR`]: const@::libc::O_RDWR
     /// [`O_CREAT`]: const@::libc::O_CREAT
     /// [`O_EXCL`]: const@::libc::O_EXCL
-    pub fn open_file<P: AsRef<Path>>(&self, path: P, extra_flags: i32) -> io::Result<File> {
+    pub fn open_file<P: AsRef<Path>>(&self, path: P, extra_flags: i32, mode: u64) -> io::Result<File> {
         let mut path_buf = PathBuf::new();
         let mut filename = None;
 
@@ -349,7 +465,7 @@ impl Dir {
             if let Component::Normal(os_str) = c {
                 let new_fd = unsafe {
                     cstr(os_str.as_bytes(), &|cstr| {
-                        openat(prev_fd, cstr.as_ptr(), self.flags | O_RDONLY)
+                        openat(prev_fd, cstr.as_ptr(), self.flags | O_RDONLY, mode)
                     })
                 };
 
@@ -377,6 +493,7 @@ impl Dir {
                     prev_fd,
                     cstr.as_ptr(),
                     self.flags & !O_DIRECTORY | extra_flags,
+                    mode,
                 )
             })
         };
@@ -602,6 +719,8 @@ unsafe fn cstr_alloc<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
     f(&CString::from_vec_unchecked(bytes.to_owned()))
 }
 
+mod openat2;
+
 #[cfg(test)]
 mod test {
     use io::Read;
@@ -745,7 +864,7 @@ mod test {
 
         let dir = Dir::open("./playground")?;
 
-        let result = dir.open_file("subfolder9/data.txt", libc::O_RDONLY);
+        let result = dir.open_file("subfolder9/data.txt", libc::O_RDONLY, 0o655);
 
         match result {
             Err(e) => panic!("failure(open_file): {e}"),
