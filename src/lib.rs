@@ -1,11 +1,11 @@
-//! High-level abstractions of *at-and-related *nix syscalls to build race condition-free,
+//! High-level abstractions of *at(2)-and-related Linux syscalls to build race condition-free,
 //! thread-safe, symlink traversal attack-safe user APIs.   
 //!
 //! ### Motivation
 //!
 //! While building filesystem-abstracting APIs, you can easily run into race conditions: classic
-//! system calls, as exposed by Rust's filesystem library, often [do not provide sufficient
-//! protections in multi-threaded or multi-process applications](https://tldp.org/HOWTO/Secure-Programs-HOWTO/avoid-race.html).  
+//! system calls, as exposed by Rust's filesystem library, often do not provide sufficient
+//! protections in multi-threaded or multi-process applications.  
 //!
 //! In more complex applications, especially if they run as root, you risk exposing yourself to
 //! time-of-check time-of-use (TOCTOU) race conditions, which can culminate to privilege escalation
@@ -72,6 +72,7 @@
 //! runtime's `spawn_blocking` function. This includes all methods on [`Dir`], as well as its
 //! [`Drop`] implementation.
 //!
+//!
 //! ```
 //! use std::path::PathBuf;
 //! use std::io;
@@ -91,8 +92,8 @@
 //!
 //! ### OS Support
 //!
-//! Most *nix systems should work, though this is only tested against Linux currently. Some patches
-//! are applied for MacOS.
+//! This crate exclusively supports Linux. Some methods use the `openat2` syscall, which is only
+//! supported by Linux 5.6+. You may check for `openat2` compatibility with [`openat2_compatible`].
 //!
 //! ### Prior art
 //!
@@ -103,6 +104,8 @@
 //!
 //! This software is dual-licensed under the MIT license and the Apache-2.0 license.
 
+#![cfg(target_os = "linux")]
+
 use std::ffi::{c_int, CStr, CString};
 use std::fs::File;
 use std::os::fd::FromRawFd;
@@ -111,19 +114,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{io, mem, ptr, slice};
 
-#[cfg(target_os = "windows")]
-compile_error!("crate `sneak` is not supported on Windows.");
-
-#[cfg(not(target_os = "macos"))]
-use libc::{
-    close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY
-};
-#[cfg(target_os = "macos")]
-use libc::{
-    close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_RDONLY
-};
-#[cfg(target_os = "macos")]
-const O_PATH: c_int = 0;
+use libc::{close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY};
 
 /// A owned reference to an opened directory. This reference is automatically cleaned up on drop.
 pub struct Dir {
