@@ -577,7 +577,7 @@ pub fn default_flags() -> c_int {
 /// Safety: caller must ensure `bytes` has no nul byte.
 #[inline]
 unsafe fn cstr<T>(bytes: &[u8], f: &dyn Fn(&CStr) -> T) -> T {
-    const STACK_MAX: usize = 384;
+    const STACK_MAX: usize = 256;
 
     if bytes.len() >= STACK_MAX {
         cstr_alloc(bytes, f)
