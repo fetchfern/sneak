@@ -585,6 +585,25 @@ impl Dir {
             Ok(DirStream { st, reuse_flags: self.flags })
         }
     }
+
+    pub fn dup(&self) -> io::Result<Dir> {
+        let fd = unsafe {
+            if self.flags & O_CLOEXEC != 0 {
+                fcntl(self.fd, F_DUPFD_CLOEXEC, 3)
+            } else {
+                dup(self.fd)
+            }
+        };
+
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Dir {
+                fd,
+                flags: self.flags,
+            })
+        }
+    }
 }
 
 impl Drop for Dir {
