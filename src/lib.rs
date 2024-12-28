@@ -130,7 +130,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{io, mem, ptr, slice};
 
-use libc::{close, dev_t, fchown, fstat, ino_t, open, openat, stat, time_t, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS};
+use libc::{__errno_location, c_uchar, close, closedir, dev_t, dirfd, dup, fchown, fcntl, fdopendir, fstat, ino_t, open, openat, readdir, stat, time_t, DIR, F_DUPFD_CLOEXEC, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_PATH, O_RDONLY, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, DT_REG, DT_LNK, DT_DIR};
 
 pub use crate::openat2::{OpenHow, openat2};
 
@@ -573,6 +573,18 @@ impl Dir {
             })
         }
     }
+
+    pub fn readdir(self) -> io::Result<DirStream> {
+        unsafe {
+            let st = fdopendir(self.fd);
+
+            if st.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+
+            Ok(DirStream { st, reuse_flags: self.flags })
+        }
+    }
 }
 
 impl Drop for Dir {
@@ -580,6 +592,97 @@ impl Drop for Dir {
         if self.fd > 0 {
             unsafe {
                 close(self.fd);
+            }
+        }
+    }
+}
+
+pub struct Dirent {
+    pub name: CString,
+    d_type: c_uchar,
+}
+
+impl Dirent {
+    pub fn is_symlink(&self) -> bool {
+        (self.d_type & DT_LNK) != 0
+    }
+
+    pub fn is_dir(&self) -> bool {
+        (self.d_type & DT_DIR) != 0
+    }
+
+    pub fn is_file(&self) -> bool {
+        (self.d_type & DT_REG) != 0
+    }
+}
+
+pub struct DirStream {
+    st: *mut DIR,
+    reuse_flags: c_int,
+}
+
+impl Iterator for DirStream {
+    type Item = io::Result<Dirent>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe {
+            *__errno_location() = 0;
+            let inner = readdir(self.st);
+            if *__errno_location() != 0 && inner.is_null() {
+                Some(Err(io::Error::last_os_error()))
+            } else if inner.is_null() {
+                None
+            } else {
+                Some(Ok(Dirent {
+                    name: CStr::from_ptr((*inner).d_name.as_ptr()).to_owned(),
+                    d_type: (*inner).d_type,
+                }))
+            }
+        }
+    }
+}
+
+impl DirStream {
+    pub fn reuse(mut self) -> io::Result<Dir> {
+        let st = self.st;
+        // so that the `Drop` impl of `DirStream` doesn't double-close the stream
+        self.st = ptr::null_mut();
+
+        let fd = unsafe {
+            let fd = dirfd(st);
+
+            if fd < 0 {
+                let _ = closedir(st);
+                return Err(io::Error::last_os_error());
+            }
+
+            let newfd = if self.reuse_flags & O_CLOEXEC != 0 {
+                fcntl(fd, F_DUPFD_CLOEXEC, 3)
+            } else {
+                dup(fd)
+            };
+
+            let _ = closedir(st);
+
+            if newfd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            newfd
+        };
+
+        Ok(Dir {
+            fd,
+            flags: self.reuse_flags,
+        })
+    }
+}
+
+impl Drop for DirStream {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.st.is_null() {
+                let _ = closedir(self.st);
             }
         }
     }
