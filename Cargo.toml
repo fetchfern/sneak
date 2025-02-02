@@ -1,6 +1,6 @@
 [package]
 name = "sneak"
-version = "0.1.0-rc3"
+version = "0.1.0-rc4"
 description = "easy-to-use *at syscall abstractions"
 edition = "2021"
 authors = ["François-Xavier Talbot <fetch@pyro.host>"]
