@@ -207,6 +207,12 @@ impl Dir {
         self.flags
     }
 
+    /// Returns the inner file descriptor held by the [`Dir`]. Shoudl only be used for debugging
+    /// purposes; do not use the file descriptor outside [`Dir`].
+    pub fn fd(&self) -> i32 {
+        self.fd
+    }
+
     /// Opens the directory at the target path using the `RESOLVE_BENEATH` option of the `openat2`
     /// syscall.  
     ///
@@ -944,7 +950,11 @@ mod test {
     fn open_skip_symlink() -> io::Result<()> {
         std::fs::create_dir_all("./playground/subdir1/")?;
         std::fs::create_dir_all("./playground/linked/bad")?;
-        std::os::unix::fs::symlink("./playground/linked", "./playground/subdir1/link")?;
+        if let Err(e) = std::os::unix::fs::symlink("../../playground/linked", "./playground/subdir1/link") {
+            if e.kind() != io::ErrorKind::AlreadyExists {
+                return Err(e);
+            }
+        }
 
         let dir = Dir::open("./playground")?;
 
@@ -1021,6 +1031,20 @@ mod test {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn dup() -> io::Result<()> {
+        std::fs::create_dir_all("./playground/dup/subdir")?;
+
+        let duplicate_dir = {
+            let dir = Dir::open("./playground")?;
+            dir.dup()?
+        };
+
+        let _ = duplicate_dir.open_dirs("./dup/subdir")?;
 
         Ok(())
     }
