@@ -149,6 +149,35 @@ impl Dir {
             cstr(path.as_ref().as_os_str().as_bytes(), &|s| {
                 open(
                     s.as_ptr(),
+                    O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_RDONLY,
+                )
+            })
+        };
+
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Dir {
+                fd,
+                flags: default_flags(),
+            })
+        }
+    }
+
+    /// Opens the directory using a normal `open(2)` syscall and the `O_PATH` option.  
+    ///
+    /// This means the file descriptor will not truly be opened; this requires less permissions
+    /// on the directory itself and may be more efficient if only `open_*` methods are used on
+    /// the [`Dir`].  
+    ///
+    /// This will lead to some operations, like [`readdir`], failing.  
+    ///
+    /// This does not follow symbolic links.
+    pub fn open_virtual<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let fd = unsafe {
+            cstr(path.as_ref().as_os_str().as_bytes(), &|s| {
+                open(
+                    s.as_ptr(),
                     O_DIRECTORY | O_PATH | O_NOFOLLOW | O_CLOEXEC | O_RDONLY,
                 )
             })
